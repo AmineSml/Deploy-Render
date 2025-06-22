@@ -1,75 +1,70 @@
-import express from 'express';
-import { chromium } from 'playwright';
-import cors from 'cors';
-
 const express = require("express");
 const cors = require("cors");
+const { chromium } = require("playwright");
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 3000;
-
-app.post('/api/scrape', async (req, res) => {
+app.post("/api/scrape", async (req, res) => {
   const { query } = req.body;
-  if (!query) return res.status(400).json({ error: 'Missing query' });
 
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  if (!query) {
+    return res.status(400).json({ error: "Missing query" });
+  }
+
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+
   const results = [];
 
-  const sites = {
-    FR: 'https://www.hermes.com/fr/fr/',
-    US: 'https://www.hermes.com/us/en/'
+  const countries = {
+    US: "https://www.hermes.com/us/en/search/?q=",
+    FR: "https://www.hermes.com/fr/fr/search/?q=",
+    UK: "https://www.hermes.com/uk/en/search/?q=",
+    JP: "https://www.hermes.com/jp/ja/search/?q=",
+    AE: "https://www.hermes.com/ae/en/search/?q="
   };
 
-  for (const [country, url] of Object.entries(sites)) {
-    const page = await context.newPage();
+  for (const [countryCode, baseUrl] of Object.entries(countries)) {
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      const searchUrl = `${baseUrl}${encodeURIComponent(query)}`;
+      await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
 
-      try {
-        await page.click('button:has-text("Accepter")', { timeout: 2000 });
-      } catch {}
+      const product = await page.$(".product-item");
 
-      await page.click('button[aria-label="Search"]');
-      await page.fill('input[type="search"]', query);
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(3000);
+      if (product) {
+        const name = await product.$eval(".product-item-name", el => el.textContent.trim());
+        const localPrice = await product.$eval(".price", el => el.textContent.trim());
+        const link = await product.$eval("a", el => el.href);
 
-      const product = await page.locator('[data-testid="ProductGridItem"]').first();
-      const name = await product.locator('[data-testid="ProductGridItemName"]').innerText();
-      const price = await product.locator('[data-testid="ProductGridItemPrice"]').innerText();
-      const link = await product.locator('a').first().getAttribute('href');
+        // Dummy exchange rates — update with real API for production
+        const rates = { EUR: 1.09, GBP: 1.27, JPY: 0.0063, AED: 0.27, USD: 1 };
+        const symbolToCurrency = { "€": "EUR", "£": "GBP", "¥": "JPY", "د.إ": "AED", "$": "USD" };
 
-      const numericPrice = parseFloat(price.replace(/[^0-9,.]/g, '').replace(',', '.'));
-      const usdPrice = convertToUSD(numericPrice, country);
+        const symbol = localPrice.trim().charAt(0);
+        const currency = symbolToCurrency[symbol] || "USD";
+        const numericValue = parseFloat(localPrice.replace(/[^\d.]/g, ""));
 
-      results.push({
-        country,
-        name,
-        local_price: price,
-        usd_price: usdPrice,
-        link: `https://www.hermes.com${link}`
-      });
+        const usdPrice = +(numericValue * (rates[currency] || 1)).toFixed(2);
+
+        results.push({
+          country: countryCode,
+          name,
+          local_price: localPrice,
+          usd_price: usdPrice,
+          link
+        });
+      }
     } catch (e) {
-      console.error(`Error scraping ${country}:`, e.message);
+      console.warn(`Error scraping ${countryCode}:`, e.message);
     }
-    await page.close();
   }
 
   await browser.close();
-  res.status(200).json({ results });
+  res.json({ results });
 });
 
-function convertToUSD(price, country) {
-  const rates = {
-    FR: 1.08,
-    US: 1.0
-  };
-  return Math.round(price * (rates[country] || 1));
-}
-
-app.listen(PORT, () => {
-  console.log(`API running on http://localhost:${PORT}`);
+app.listen(10000, () => {
+  console.log("API running on http://localhost:10000");
 });
